@@ -1,0 +1,115 @@
+// Prisma schema for Mini B2B RFQ Marketplace
+// Docs: https://www.prisma.io/docs/reference/api-reference/prisma-schema-reference
+//
+// Prisma 7 change: the datasource URL is no longer defined here.
+// It is configured in prisma.config.ts which Prisma CLI reads automatically.
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+}
+
+// ---------------------------------------------------------------------------
+// Enums
+// ---------------------------------------------------------------------------
+
+enum Role {
+  BUYER
+  SUPPLIER
+}
+
+enum RfqStatus {
+  OPEN
+  CLOSED
+}
+
+// ---------------------------------------------------------------------------
+// User
+// ---------------------------------------------------------------------------
+
+model User {
+  id           String   @id @default(uuid())
+  name         String
+  // Stored lowercase — normalization happens in the service layer before
+  // every signup/login so we rely on the unique constraint, not citext.
+  email        String   @unique
+  passwordHash String
+  role         Role
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  // Named relations are required because User has two separate relation types:
+  // one to RFQ (as buyer) and one to Quotation (as supplier).
+  // Without names, Prisma cannot distinguish them and will fail validation.
+  rfqs       Rfq[]       @relation("BuyerRfqs")
+  quotations Quotation[] @relation("SupplierQuotations")
+
+  @@map("users")
+}
+
+// ---------------------------------------------------------------------------
+// Rfq (Request for Quotation)
+// ---------------------------------------------------------------------------
+
+model Rfq {
+  id          String    @id @default(uuid())
+  buyerId     String
+  productName String
+  description String    @db.Text
+  quantity    Int
+  location    String
+  deadline    DateTime
+  // Newly created RFQs start as OPEN. Only the owning buyer may close them.
+  status      RfqStatus @default(OPEN)
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+
+  // Relation to owning buyer.
+  // onDelete: Restrict — prevents accidental deletion of a User who has RFQs.
+  buyer      User        @relation("BuyerRfqs", fields: [buyerId], references: [id], onDelete: Restrict)
+  quotations Quotation[]
+
+  // Composite index: status + deadline together support the most common supplier
+  // query — "show me all OPEN RFQs that haven't expired yet".
+  @@index([status, deadline])
+  // Single-column index: speeds up "show me all RFQs owned by this buyer".
+  @@index([buyerId])
+  @@map("rfqs")
+}
+
+// ---------------------------------------------------------------------------
+// Quotation
+// ---------------------------------------------------------------------------
+
+model Quotation {
+  id                    String   @id @default(uuid())
+  rfqId                 String
+  supplierId            String
+  // Decimal is mandatory — Float loses precision for financial values.
+  price                 Decimal  @db.Decimal(12, 2)
+  estimatedDeliveryDays Int
+  notes                 String?  @db.Text
+  createdAt             DateTime @default(now())
+  updatedAt             DateTime @updatedAt
+
+  // Relation to the RFQ this quotation responds to.
+  // onDelete: Cascade — if an RFQ were ever removed, its quotations go with it.
+  rfq      Rfq  @relation(fields: [rfqId], references: [id], onDelete: Cascade)
+
+  // Relation to the submitting supplier.
+  // onDelete: Restrict — a supplier User must not be deleted while they have
+  // active quotations (preserves business history).
+  supplier User @relation("SupplierQuotations", fields: [supplierId], references: [id], onDelete: Restrict)
+
+  // Business rule: one supplier can submit exactly one quotation per RFQ.
+  @@unique([rfqId, supplierId])
+
+  // Index on rfqId: speeds up "fetch all quotations for this RFQ" (buyer view).
+  @@index([rfqId])
+  // Index on supplierId: speeds up "fetch all my quotations" (supplier view).
+  @@index([supplierId])
+  @@map("quotations")
+}

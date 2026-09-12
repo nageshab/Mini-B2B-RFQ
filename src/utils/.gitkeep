@@ -1,0 +1,2 @@
+# This file exists to track the empty directory in git.
+# Shared utilities (ApiError, ApiResponse, asyncHandler) will be added in Phase 3.
